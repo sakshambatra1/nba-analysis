@@ -1,5 +1,5 @@
 import streamlit as st
-from nba_api.stats.endpoints import playergamelog
+from nba_api.stats.endpoints import clutchplayerstats
 from nba_api.stats.static import players
 import pandas as pd
 import time
@@ -42,42 +42,50 @@ def get_player_id(player_name):
 
 @st.cache_data(ttl=3600)
 def get_career_clutch_stats(player_id):
-    """Get player's career clutch performance"""
+    """Get player's career clutch performance in last 5 minutes of close games"""
     try:
-        all_games = pd.DataFrame()
+        # Get current season for the range
+        current_season = "2023-24"
         
-        # Get all NBA seasons from 1976-77 to present
-        seasons = [f"{year}-{str(year+1)[-2:]}" for year in range(1976, 2024)]
+        # Try last 3 seasons first for newer players
+        clutch_stats = clutchplayerstats.ClutchPlayerStats(
+            player_id=player_id,
+            per_mode_simple='Totals',
+            season_type_all_star='Regular Season',
+            clutch_time=5,
+            point_diff=5,
+            season=current_season
+        ).get_data_frames()[0]
         
-        for season in seasons:
-            try:
-                # Get game log for each season
-                gamelog = playergamelog.PlayerGameLog(
-                    player_id=player_id,
-                    season=season
-                ).get_data_frames()[0]
-                all_games = pd.concat([all_games, gamelog])
-                time.sleep(0.6)  # Rate limiting
-            except:
-                continue
-        
-        if all_games.empty:
-            return {"error": "No games found"}
-            
-        # Define clutch games (close games - margin ≤ 5 points)
-        clutch_games = all_games[abs(all_games['PLUS_MINUS']) <= 5]
-        
-        # Calculate career clutch stats
+        if clutch_stats.empty:
+            # If no stats found in recent seasons, try historical data
+            clutch_stats = clutchplayerstats.ClutchPlayerStats(
+                player_id=player_id,
+                per_mode_simple='Totals',
+                season_type_all_star='Regular Season',
+                clutch_time=5,
+                point_diff=5,
+                season='1976-77'  # Historical data
+            ).get_data_frames()[0]
+
+        if clutch_stats.empty:
+            return {"error": "No clutch stats found"}
+
+        # Extract the stats
         stats = {
-            'games_played': len(clutch_games),
-            'ppg': round(clutch_games['PTS'].mean(), 1) if not clutch_games.empty else 0,
-            'fg_pct': round(clutch_games['FG_PCT'].mean() * 100, 1) if not clutch_games.empty else 0,
-            'ft_pct': round(clutch_games['FT_PCT'].mean() * 100, 1) if not clutch_games.empty else 0,
-            'plus_minus': round(clutch_games['PLUS_MINUS'].mean(), 1) if not clutch_games.empty else 0,
-            'win_pct': round((clutch_games['PLUS_MINUS'] > 0).mean() * 100, 1) if not clutch_games.empty else 0,
-            'total_clutch_points': int(clutch_games['PTS'].sum()) if not clutch_games.empty else 0,
-            'total_games': len(all_games),
-            'clutch_game_pct': round(len(clutch_games) / len(all_games) * 100, 1) if not all_games.empty else 0
+            'games_played': int(clutch_stats['GP'].iloc[0]),
+            'minutes': round(float(clutch_stats['MIN'].iloc[0]), 1),
+            'ppg': round(float(clutch_stats['PTS'].iloc[0]) / float(clutch_stats['GP'].iloc[0]), 1),
+            'fg_pct': round(float(clutch_stats['FG_PCT'].iloc[0]) * 100, 1),
+            'fg3_pct': round(float(clutch_stats['FG3_PCT'].iloc[0]) * 100, 1),
+            'ft_pct': round(float(clutch_stats['FT_PCT'].iloc[0]) * 100, 1),
+            'plus_minus': round(float(clutch_stats['PLUS_MINUS'].iloc[0]), 1),
+            'total_points': int(clutch_stats['PTS'].iloc[0]),
+            'assists': round(float(clutch_stats['AST'].iloc[0]) / float(clutch_stats['GP'].iloc[0]), 1),
+            'rebounds': round(float(clutch_stats['REB'].iloc[0]) / float(clutch_stats['GP'].iloc[0]), 1),
+            'steals': round(float(clutch_stats['STL'].iloc[0]) / float(clutch_stats['GP'].iloc[0]), 1),
+            'blocks': round(float(clutch_stats['BLK'].iloc[0]) / float(clutch_stats['GP'].iloc[0]), 1),
+            'turnovers': round(float(clutch_stats['TOV'].iloc[0]) / float(clutch_stats['GP'].iloc[0]), 1)
         }
         
         return stats
@@ -86,14 +94,14 @@ def get_career_clutch_stats(player_id):
 
 # App header
 st.title("🏀 NBA Career Clutch Performance Analyzer")
-st.markdown("Compare players' entire career performance in close games (margin ≤ 5 points)")
+st.markdown("Compare players' career performance in clutch situations (last 5 minutes, margin ≤ 5 points)")
 
 # Player selection
 col1, col2 = st.columns(2)
 with col1:
     player1 = st.text_input("Player 1:", "LeBron James")
 with col2:
-    player2 = st.text_input("Player 2:", "Kevin Durant")
+    player2 = st.text_input("Player 2:", "Kobe Bryant")
 
 if st.button("Compare Players", type="primary"):
     with st.spinner("Analyzing career clutch performance..."):
@@ -107,6 +115,7 @@ if st.button("Compare Players", type="primary"):
         
         # Get clutch stats
         p1_stats = get_career_clutch_stats(p1_id)
+        time.sleep(1)  # Rate limiting
         p2_stats = get_career_clutch_stats(p2_id)
         
         # Error handling
@@ -125,15 +134,19 @@ if st.button("Compare Players", type="primary"):
                 st.markdown(f"### {name}")
                 
                 metrics = [
-                    ("Total Games Played", "total_games", ""),
                     ("Clutch Games Played", "games_played", ""),
-                    ("% Games That Were Clutch", "clutch_game_pct", "%"),
-                    ("Points in Clutch Games", "ppg", "PPG"),
-                    ("FG% in Clutch", "fg_pct", "%"),
-                    ("FT% in Clutch", "ft_pct", "%"),
-                    ("Avg Plus/Minus", "plus_minus", ""),
-                    ("Win % in Clutch", "win_pct", "%"),
-                    ("Total Clutch Points", "total_clutch_points", "")
+                    ("Avg. Clutch Minutes", "minutes", ""),
+                    ("Points per Game", "ppg", ""),
+                    ("FG%", "fg_pct", "%"),
+                    ("3P%", "fg3_pct", "%"),
+                    ("FT%", "ft_pct", "%"),
+                    ("Plus/Minus", "plus_minus", ""),
+                    ("Total Clutch Points", "total_points", ""),
+                    ("Assists per Game", "assists", ""),
+                    ("Rebounds per Game", "rebounds", ""),
+                    ("Steals per Game", "steals", ""),
+                    ("Blocks per Game", "blocks", ""),
+                    ("Turnovers per Game", "turnovers", "")
                 ]
                 
                 for label, key, suffix in metrics:
@@ -152,19 +165,20 @@ if st.button("Compare Players", type="primary"):
         # Add career insights
         st.markdown("### Career Insights")
         
-        win_diff = abs(p1_stats['win_pct'] - p2_stats['win_pct'])
-        better_clutch = player1 if p1_stats['win_pct'] > p2_stats['win_pct'] else player2
-        
-        points_diff = abs(p1_stats['ppg'] - p2_stats['ppg'])
+        ppg_diff = abs(p1_stats['ppg'] - p2_stats['ppg'])
         better_scorer = player1 if p1_stats['ppg'] > p2_stats['ppg'] else player2
         
+        plus_minus_diff = abs(p1_stats['plus_minus'] - p2_stats['plus_minus'])
+        better_impact = player1 if p1_stats['plus_minus'] > p2_stats['plus_minus'] else player2
+        
         st.markdown(f"""
-        - {better_clutch} has a higher career win percentage in clutch games by {win_diff:.1f}%
-        - {better_scorer} averages {points_diff:.1f} more points in close games
-        - {player1} has played {p1_stats['games_played']} close games ({p1_stats['clutch_game_pct']}% of games) vs {player2}'s {p2_stats['games_played']} games ({p2_stats['clutch_game_pct']}% of games)
-        - {player1}'s total clutch points: {p1_stats['total_clutch_points']} | {player2}'s total clutch points: {p2_stats['total_clutch_points']}
+        - {better_scorer} averages {ppg_diff:.1f} more points in clutch situations
+        - {better_impact} has a better plus/minus in clutch by {plus_minus_diff:.1f} points
+        - {player1} has played {p1_stats['games_played']} clutch games, averaging {p1_stats['minutes']} minutes
+        - {player2} has played {p2_stats['games_played']} clutch games, averaging {p2_stats['minutes']} minutes
+        - Career clutch scoring: {player1}: {p1_stats['total_points']} points | {player2}: {p2_stats['total_points']} points
         """)
 
 # Footer
 st.markdown("---")
-st.caption("Data from NBA.com | Close games defined as final margin ≤ 5 points | Stats for entire career")
+st.caption("Data from NBA.com | Clutch defined as last 5 minutes with margin ≤ 5 points")
